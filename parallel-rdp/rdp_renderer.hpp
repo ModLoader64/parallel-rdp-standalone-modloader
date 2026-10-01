@@ -149,6 +149,7 @@ public:
 	void submit_update_upscaled_domain_external(Vulkan::CommandBuffer &cmd,
 	                                            unsigned addr, unsigned pixels, unsigned pixel_size_log2);
 	unsigned get_scaling_factor() const;
+	uint32_t get_upscaled_rdram_size() const; // ModLoader
 
 	const Vulkan::Buffer *get_upscaled_rdram_buffer() const;
 	const Vulkan::Buffer *get_upscaled_hidden_rdram_buffer() const;
@@ -165,6 +166,20 @@ private:
 	Vulkan::BufferHandle upscaling_reference_rdram;
 	Vulkan::BufferHandle upscaling_multisampled_rdram;
 	Vulkan::BufferHandle upscaling_multisampled_hidden_rdram;
+
+	struct UpscaledSlot
+	{
+		uint32_t size, color_base, depth_base, depth, depth_bytes;
+		uint32_t drawn_begin[4], drawn_end[4];
+		uint64_t drawn_at[4], last_use;
+		Vulkan::BufferHandle planes, hidden, reference;
+	};
+	UpscaledSlot upscaled_slots[16] = {};
+	UpscaledSlot *upscaled_slot = nullptr;
+	bool upscaled_slot_depth = false;
+	UpscaledSlot scanout_slot = {};
+	uint64_t upscaled_draws = 0;
+	uint64_t upscaled_scanouts = 0;
 
 	void validate_draw_state() const;
 
@@ -349,8 +364,21 @@ private:
 	void submit_update_upscaled_domain(Vulkan::CommandBuffer &cmd, ResolveStage stage,
 	                                   unsigned addr, unsigned depth_addr,
 	                                   unsigned width, unsigned height,
-	                                   unsigned pixel_size_log2);
+	                                   unsigned pixel_size_log2, const UpscaledSlot &slot, unsigned base);
 	void submit_clear_super_sample_write_mask(Vulkan::CommandBuffer &cmd, unsigned width, unsigned height);
+
+	// ModLoader
+	void reset_upscaled_slots();
+	UpscaledSlot *whole_rdram_slot();
+	bool upscaled_slot_holds(const UpscaledSlot &slot, uint32_t begin, uint32_t length, uint32_t border) const;
+	UpscaledSlot *upscaled_slot_for_pass();
+	const UpscaledSlot &upscaled_slot_for_scanout(Vulkan::CommandBuffer &cmd, uint32_t addr, uint32_t length);
+	UpscaledSlot *create_upscaled_slot(Vulkan::CommandBuffer &cmd, uint32_t size, uint32_t color_base,
+	                                   uint32_t depth_base, bool has_depth);
+	void retire_upscaled_slots();
+	void submit_update_upscaled_slot(Vulkan::CommandBuffer &cmd, ResolveStage stage, const UpscaledSlot &slot,
+	                                 unsigned addr, unsigned depth_addr, unsigned width, unsigned height,
+	                                 unsigned pixel_size_log2);
 
 	SpanInfoOffsets allocate_span_jobs(const TriangleSetup &setup);
 

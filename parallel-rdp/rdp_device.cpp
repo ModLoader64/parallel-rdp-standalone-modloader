@@ -423,7 +423,7 @@ void CommandProcessor::op_set_color_image(const uint32_t *words)
 	unsigned fmt = (words[0] >> 21) & 7;
 	unsigned size = (words[0] >> 19) & 3;
 	unsigned width = (words[0] & 1023) + 1;
-	unsigned addr = words[1] & 0xffffff;
+	unsigned addr = words[1] & uint32_t(rdram_size - 1);
 
 	FBFormat fbfmt;
 	switch (size)
@@ -454,7 +454,7 @@ void CommandProcessor::op_set_color_image(const uint32_t *words)
 
 void CommandProcessor::op_set_mask_image(const uint32_t *words)
 {
-	unsigned addr = words[1] & 0xffffff;
+	unsigned addr = words[1] & uint32_t(rdram_size - 1);
 	renderer.set_depth_framebuffer(addr);
 }
 
@@ -545,7 +545,7 @@ void CommandProcessor::op_set_texture_image(const uint32_t *words)
 	auto fmt = TextureFormat((words[0] >> 21) & 7);
 	auto size = TextureSize((words[0] >> 19) & 3);
 	uint32_t width = (words[0] & 0x3ff) + 1;
-	uint32_t addr = words[1] & 0x00ffffffu;
+	uint32_t addr = words[1] & uint32_t(rdram_size - 1);
 
 	texture_image.addr = addr;
 	texture_image.width = width;

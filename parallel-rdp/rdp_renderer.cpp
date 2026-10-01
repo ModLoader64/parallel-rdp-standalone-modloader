@@ -555,6 +555,7 @@ bool Renderer::init_internal_upscaling_factor(const RendererOptions &options)
 	caps.super_sample_readback = options.super_sampled_readback;
 	caps.super_sample_readback_dither = options.super_sampled_readback_dither;
 
+	reset_upscaled_slots(); // ModLoader
 	if (factor == 1)
 	{
 		upscaling_multisampled_hidden_rdram.reset();
@@ -562,6 +563,10 @@ bool Renderer::init_internal_upscaling_factor(const RendererOptions &options)
 		upscaling_multisampled_rdram.reset();
 		return true;
 	}
+
+	// ModLoader: upscaled slots, unless SSAA read-back
+	if (!caps.super_sample_readback)
+		return true;
 
 	Vulkan::BufferCreateInfo info;
 	info.domain = Vulkan::BufferDomain::Device;
@@ -1940,13 +1945,15 @@ void Renderer::submit_tile_binning_combined(Vulkan::CommandBuffer &cmd, bool ups
 void Renderer::submit_update_upscaled_domain_external(Vulkan::CommandBuffer &cmd,
                                                       unsigned addr, unsigned length, unsigned pixel_size_log2)
 {
-	submit_update_upscaled_domain(cmd, ResolveStage::Pre, addr, addr, length, 1, pixel_size_log2);
+	// ModLoader
+	submit_update_upscaled_slot(cmd, ResolveStage::Pre, upscaled_slot_for_scanout(cmd, addr, length), addr, addr,
+	                            length >> pixel_size_log2, 1, pixel_size_log2);
 }
 
 void Renderer::submit_update_upscaled_domain(Vulkan::CommandBuffer &cmd, ResolveStage stage,
                                              unsigned addr, unsigned depth_addr,
                                              unsigned width, unsigned height,
-                                             unsigned pixel_size_log2)
+                                             unsigned pixel_size_log2, const UpscaledSlot &slot, unsigned base)
 {
 #ifdef PARALLEL_RDP_SHADER_DIR
 	if (stage == ResolveStage::Pre)
@@ -1976,15 +1983,16 @@ void Renderer::submit_update_upscaled_domain(Vulkan::CommandBuffer &cmd, Resolve
 		num_pixels = (num_pixels + align_pixels - 1u) & ~(align_pixels - 1u);
 	}
 
-	cmd.set_storage_buffer(0, 0, *rdram, rdram_offset,
-	                       (stage == ResolveStage::SSAAResolve && !is_host_coherent ? 2 : 1) * rdram_size);
-	cmd.set_storage_buffer(0, 1, *hidden_rdram);
-	cmd.set_storage_buffer(0, 2, *upscaling_reference_rdram);
-	cmd.set_storage_buffer(0, 3, *upscaling_multisampled_rdram);
-	cmd.set_storage_buffer(0, 4, *upscaling_multisampled_hidden_rdram);
+	// ModLoader
+	cmd.set_storage_buffer(0, 0, *rdram, rdram_offset + base,
+	                       (stage == ResolveStage::SSAAResolve && !is_host_coherent ? 2 : 1) * slot.size);
+	cmd.set_storage_buffer(0, 1, *hidden_rdram, base / 2, slot.size / 2);
+	cmd.set_storage_buffer(0, 2, *slot.reference);
+	cmd.set_storage_buffer(0, 3, *slot.planes);
+	cmd.set_storage_buffer(0, 4, *slot.hidden);
 
 	cmd.set_specialization_constant_mask(0x7f);
-	cmd.set_specialization_constant(0, uint32_t(rdram_size));
+	cmd.set_specialization_constant(0, slot.size);
 	cmd.set_specialization_constant(1, pixel_size_log2);
 	cmd.set_specialization_constant(2, int(addr == depth_addr));
 	cmd.set_specialization_constant(3, ImplementationConstants::DefaultWorkgroupSize);
@@ -2082,8 +2090,8 @@ void Renderer::submit_update_upscaled_domain(Vulkan::CommandBuffer &cmd, Resolve
 		break;
 	}
 
-	submit_update_upscaled_domain(cmd, stage, fb.addr, fb.depth_addr,
-	                              fb.width, fb.deduced_height, pixel_size_log2);
+	submit_update_upscaled_slot(cmd, stage, *upscaled_slot, fb.addr, upscaled_slot_depth ? fb.depth_addr : fb.addr, // ModLoader
+	                            fb.width, fb.deduced_height, pixel_size_log2);
 }
 
 void Renderer::submit_depth_blend(Vulkan::CommandBuffer &cmd, Vulkan::Buffer &tmem, bool upscaled, bool force_write_mask)
@@ -2092,7 +2100,7 @@ void Renderer::submit_depth_blend(Vulkan::CommandBuffer &cmd, Vulkan::Buffer &tm
 	auto &instance = buffer_instances[buffer_instance];
 
 	cmd.set_specialization_constant_mask(0xff);
-	cmd.set_specialization_constant(0, uint32_t(rdram_size));
+	cmd.set_specialization_constant(0, upscaled ? upscaled_slot->size : uint32_t(rdram_size)); // ModLoader
 	cmd.set_specialization_constant(1, uint32_t(fb.fmt));
 	cmd.set_specialization_constant(2, int(fb.addr == fb.depth_addr));
 	cmd.set_specialization_constant(3, ImplementationConstants::TileWidth);
@@ -2103,10 +2111,10 @@ void Renderer::submit_depth_blend(Vulkan::CommandBuffer &cmd, Vulkan::Buffer &tm
 	                                   ((upscaled ? Util::trailing_zeroes(caps.upscaling) : 0u) << 1u));
 
 	if (upscaled)
-		cmd.set_storage_buffer(0, 0, *upscaling_multisampled_rdram);
+		cmd.set_storage_buffer(0, 0, *upscaled_slot->planes); // ModLoader
 	else
 		cmd.set_storage_buffer(0, 0, *rdram, rdram_offset, rdram_size * (is_host_coherent ? 1 : 2));
-	cmd.set_storage_buffer(0, 1, upscaled ? *upscaling_multisampled_hidden_rdram : *hidden_rdram);
+	cmd.set_storage_buffer(0, 1, upscaled ? *upscaled_slot->hidden : *hidden_rdram); // ModLoader
 	cmd.set_storage_buffer(0, 2, tmem);
 
 	if (!caps.ubershader)
@@ -2244,7 +2252,7 @@ void Renderer::submit_render_pass(Vulkan::CommandBuffer &cmd)
 	{
 		submit_span_setup_jobs(cmd, false);
 		submit_tile_binning_combined(cmd, false);
-		if (caps.upscaling > 1)
+		if (render_pass_is_upscaled()) // ModLoader
 			submit_update_upscaled_domain(cmd, ResolveStage::Pre);
 	}
 
@@ -2701,12 +2709,12 @@ unsigned Renderer::get_scaling_factor() const
 
 const Vulkan::Buffer *Renderer::get_upscaled_rdram_buffer() const
 {
-	return upscaling_multisampled_rdram.get();
+	return scanout_slot.planes.get(); // ModLoader
 }
 
 const Vulkan::Buffer *Renderer::get_upscaled_hidden_rdram_buffer() const
 {
-	return upscaling_multisampled_hidden_rdram.get();
+	return scanout_slot.hidden.get(); // ModLoader
 }
 
 void Renderer::resolve_coherency_host_to_gpu(Vulkan::CommandBuffer &cmd)
@@ -2953,6 +2961,7 @@ void Renderer::flush_queues()
 	if (!is_host_coherent)
 		resolve_coherency_host_to_gpu(*stream.cmd);
 	instance.upload(*device, stream, *stream.cmd);
+	upscaled_slot = upscaled_slot_for_pass(); // ModLoader
 
 	// If we have super-sampled readback, then this is meaningless.
 	bool has_single_sampled_render_pass = !caps.super_sample_readback;
@@ -2994,7 +3003,7 @@ bool Renderer::render_pass_is_upscaled() const
 		return true;
 
 	bool need_render_pass = fb.width != 0 && fb.deduced_height != 0 && !stream.span_info_jobs.empty();
-	return need_render_pass && should_render_upscaled();
+	return need_render_pass && should_render_upscaled() && upscaled_slot; // ModLoader
 }
 
 bool Renderer::should_render_upscaled() const
