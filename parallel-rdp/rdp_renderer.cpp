@@ -28,7 +28,7 @@
 #include "luts.hpp"
 #include "timer.hpp"
 #include <limits>
-#include <stdlib.h>
+#include <cstdlib>
 #ifdef PARALLEL_RDP_SHADER_DIR
 #include "global_managers.hpp"
 #include "os_filesystem.hpp"
