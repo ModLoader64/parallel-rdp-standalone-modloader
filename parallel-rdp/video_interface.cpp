@@ -181,7 +181,7 @@ VideoInterface::Registers VideoInterface::decode_vi_registers(HorizontalInfoLine
 	// Definitely should not change per scanline ...
 	reg.status = vi_registers[unsigned(VIRegister::Control)];
 	reg.vi_width = vi_registers[unsigned(VIRegister::Width)] & 0xfff;
-	reg.vi_offset = vi_registers[unsigned(VIRegister::Origin)] & 0xffffff;
+	reg.vi_offset = vi_registers[unsigned(VIRegister::Origin)] & uint32_t(rdram_size - 1);
 	reg.v_current_line = vi_registers[unsigned(VIRegister::VCurrentLine)] & 1;
 	reg.v_start = (vi_registers[unsigned(VIRegister::VStart)] >> 16) & 0x3ff;
 
@@ -482,7 +482,7 @@ Vulkan::ImageHandle VideoInterface::vram_fetch_stage(const Registers &regs, unsi
 	push.y_res = extract_height;
 
 	async_cmd->set_specialization_constant_mask(7);
-	async_cmd->set_specialization_constant(0, uint32_t(rdram_size));
+	async_cmd->set_specialization_constant(0, uint32_t(scaling_factor > 1 ? renderer->get_upscaled_rdram_size() : rdram_size)); // ModLoader
 	async_cmd->set_specialization_constant(1, regs.status & (VI_CONTROL_TYPE_MASK | VI_CONTROL_META_AA_BIT));
 	async_cmd->set_specialization_constant(2, Util::trailing_zeroes(scaling_factor));
 
